@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>NAVI SaaS V4</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<style>
+body {
+    margin: 0;
+    font-family: Arial;
+    background: #0b1220;
+    color: white;
+}
+
+/* SIDEBAR */
+.sidebar {
+    width: 220px;
+    height: 100vh;
+    position: fixed;
+    background: #111827;
+    padding: 20px;
+}
+
+.logo {
+    font-size: 20px;
+    font-weight: bold;
+    margin-bottom: 20px;
+    color: #22c55e;
+}
+
+.nav-item {
+    padding: 10px;
+    margin: 5px 0;
+    background: #1f2937;
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+/* MAIN */
+.main {
+    margin-left: 240px;
+    padding: 20px;
+}
+
+/* GRID */
+.grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+}
+
+.card {
+    background: #111827;
+    padding: 15px;
+    border-radius: 10px;
+}
+
+/* INPUTS */
+textarea {
+    width: 100%;
+    height: 140px;
+    background: #0b1220;
+    color: white;
+    border: 1px solid #1f2937;
+    border-radius: 8px;
+    padding: 10px;
+}
+
+input[type="file"] {
+    margin-top: 10px;
+}
+
+button {
+    width: 100%;
+    padding: 10px;
+    margin-top: 10px;
+    border: none;
+    border-radius: 8px;
+    font-weight: bold;
+    cursor: pointer;
+}
+
+.green { background: #22c55e; }
+.blue { background: #3b82f6; color: white; }
+
+/* RESULTS */
+.result-box {
+    background: #0b1220;
+    padding: 10px;
+    border-radius: 8px;
+    margin-top: 10px;
+    border: 1px solid #1f2937;
+}
+
+.score {
+    font-size: 22px;
+    color: #22c55e;
+}
+
+.badge {
+    display: inline-block;
+    background: #1f2937;
+    padding: 5px 8px;
+    margin: 3px;
+    border-radius: 6px;
+    font-size: 12px;
+}
+
+.bullet {
+    margin-top: 10px;
+    padding: 10px;
+    background: #1f2937;
+    border-radius: 8px;
+}
+
+.small {
+    font-size: 12px;
+    color: #9ca3af;
+}
+</style>
+</head>
+
+<body>
+
+<div class="sidebar">
+    <div class="logo">🚀 NAVI V4</div>
+    <div class="nav-item">Dashboard</div>
+    <div class="nav-item">Analyze</div>
+    <div class="nav-item">Fix Resume</div>
+    <div class="nav-item">Export</div>
+</div>
+
+<div class="main">
+
+    <h2>Resume Intelligence Dashboard</h2>
+
+    <div class="grid">
+
+        <!-- INPUT -->
+        <div class="card">
+            <h3>Input</h3>
+
+            <textarea id="resume"
+            placeholder="Paste resume..."></textarea>
+
+            <textarea id="job"
+            placeholder="Paste job description..."></textarea>
+
+            <input type="file" id="file">
+
+            <button class="green" onclick="analyze()">Analyze</button>
+            <button class="blue" onclick="fix()">Fix Resume</button>
+        </div>
+
+        <!-- OUTPUT -->
+        <div class="card">
+            <h3>Results</h3>
+            <div id="output">No data yet</div>
+        </div>
+
+    </div>
+</div>
+
+<script>
+
+const API = "http://127.0.0.1:8000";
+
+/* ---------------- ANALYZE ---------------- */
+async function analyze() {
+    const resume = document.getElementById("resume").value;
+    const job = document.getElementById("job").value;
+
+    const res = await fetch(API + "/analyze", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+            resume: resume,
+            job_descriptions: [job]
+        })
+    });
+
+    const data = await res.json();
+    const r = data.results[0];
+
+    document.getElementById("output").innerHTML = `
+        <div class="result-box">
+            <div class="score">${r.semantic_score.toFixed(1)}%</div>
+            <div class="small">ATS Match Score</div>
+            <br>
+            <div>
+                ${r.missing_skills.map(s =>
+                    `<span class="badge">${s}</span>`
+                ).join("")}
+            </div>
+        </div>
+    `;
+}
+
+/* ---------------- FIX ---------------- */
+async function fix() {
+    const resume = document.getElementById("resume").value;
+    const job = document.getElementById("job").value;
+
+    document.getElementById("output").innerHTML =
+        "Improving resume...";
+
+    try {
+        const res = await fetch(API + "/fix-resume", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+                resume_text: resume,
+                job_description: job
+            })
+        });
+
+        const data = await res.json();
+
+        let html = `
+        <div class="result-box">
+            <div class="score">${data.similarity_score.toFixed(1)}%</div>
+            <div class="small">Improved ATS Fit</div>
+        </div>
+        `;
+
+        data.improved_bullets.forEach(b => {
+            html += `
+            <div class="bullet">
+                <b>Original:</b> ${b.original}
+                <br><br>
+                <b>Improved:</b> ${b.improved}
+                <div class="small">${b.keywords_added.join(", ")}</div>
+            </div>
+            `;
+        });
+
+        html += `
+        <br>
+        <button onclick="download()">Download Result</button>
+        `;
+
+        document.getElementById("output").innerHTML = html;
+
+    } catch (err) {
+        document.getElementById("output").innerHTML =
+            "Error: backend not responding";
+    }
+}
+
+/* ---------------- EXPORT ---------------- */
+function download() {
+    const text = document.getElementById("output").innerText;
+    const blob = new Blob([text], {type: "text/plain"});
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "navi_resume.txt";
+    a.click();
+}
+
+</script>
+
+</body>
+</html>

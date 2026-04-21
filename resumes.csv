@@ -1,0 +1,56 @@
+import csv
+from sentence_transformers import SentenceTransformer, util
+
+# Load a small but effective model
+model = SentenceTransformer('all-MiniLM-L6-v2')
+
+JOB_DESCRIPTION = """
+We are looking for a Python developer with experience in FastAPI,
+REST APIs, and data processing.
+"""
+REQUIRED_SKILLS = ["Python", "FastAPI", "REST API", "data processing"]
+
+input_csv = "resumes.csv"
+output_csv = "analysis_results.csv"
+
+# Compute embeddings once for job description and skills
+job_embedding = model.encode(JOB_DESCRIPTION, convert_to_tensor=True)
+skills_embeddings = model.encode(REQUIRED_SKILLS, convert_to_tensor=True)
+
+def compute_semantic_score(resume_text):
+    resume_embedding = model.encode(resume_text, convert_to_tensor=True)
+    
+    # Overall resume vs job description similarity
+    overall_score = util.pytorch_cos_sim(resume_embedding, job_embedding).item() * 100
+    
+    # Skill-level matching
+    missing_skills = []
+    for skill, skill_emb in zip(REQUIRED_SKILLS, skills_embeddings):
+        similarity = util.pytorch_cos_sim(resume_embedding, skill_emb).item()
+        if similarity < 0.6:  # Threshold for skill match
+            missing_skills.append(skill)
+    
+    return round(overall_score, 2), missing_skills
+
+# Process resumes
+with open(input_csv, newline='', encoding='utf-8') as infile, \
+     open(output_csv, 'w', newline='', encoding='utf-8') as outfile:
+
+    reader = csv.DictReader(infile)
+    fieldnames = ['name', 'semantic_score', 'missing_skills']
+    writer = csv.DictWriter(outfile, fieldnames=fieldnames)
+    writer.writeheader()
+
+    for idx, row in enumerate(reader, start=1):
+        resume_text = row['resume']
+        score, missing_skills = compute_semantic_score(resume_text)
+
+        writer.writerow({
+            'name': f"Resume_{idx}",
+            'semantic_score': score,
+            'missing_skills': ", ".join(missing_skills) if missing_skills else "None"
+        })
+
+        print(f"[{idx}] Score: {score}% - Missing: {missing_skills if missing_skills else 'None'}")
+
+print(f"All resumes processed. Results saved to '{output_csv}'")

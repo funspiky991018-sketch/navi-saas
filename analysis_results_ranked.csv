@@ -1,0 +1,4 @@
+rank,name,semantic_score,missing_skills
+1,resume1.pdf,7.42,"Python, FastAPI, REST API, data processing"
+2,resume2.docx,7.42,"Python, FastAPI, REST API, data processing"
+3,resume3.pdf,7.42,"Python, FastAPI, REST API, data processing"
