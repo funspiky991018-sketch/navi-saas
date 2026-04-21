@@ -1,17 +1,35 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sentence_transformers import SentenceTransformer, util
 from typing import List
+import pandas as pd
+import io
+import uuid
+import os
 import json
 
-# OpenAI (new SDK)
-from openai import OpenAI
+# ==============================
+# SAFE IMPORTS (NO CRASH STARTUP)
+# ==============================
+try:
+    from sentence_transformers import SentenceTransformer, util
+    model = SentenceTransformer("all-MiniLM-L6-v2")
+except Exception as e:
+    print("SentenceTransformer failed:", e)
+    model = None
+    util = None
 
-# =========================
-# APP SETUP
-# =========================
-app = FastAPI(title="NAVI Resume API", version="4.0")
+try:
+    from openai import OpenAI
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+except Exception as e:
+    print("OpenAI init failed:", e)
+    client = None
+
+# ==============================
+# APP INIT
+# ==============================
+app = FastAPI(title="NAVI Resume Analyzer", version="4.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -21,12 +39,30 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# =========================
+progress_store = {}
+
+REQUIRED_SKILLS = [
+    "Python",
+    "FastAPI",
+    "REST API",
+    "Machine Learning",
+    "Data Processing",
+]
+
+# ==============================
 # MODELS
-# =========================
+# ==============================
 class AnalysisRequest(BaseModel):
     resume: str
     job_descriptions: List[str]
+
+class ResumeResult(BaseModel):
+    resume_name: str
+    semantic_score: float
+    missing_skills: List[str]
+
+class AnalysisResponse(BaseModel):
+    results: List[ResumeResult]
 
 class FixResumeRequest(BaseModel):
     resume_text: str
@@ -42,139 +78,191 @@ class FixResumeResponse(BaseModel):
     missing_skills: List[str]
     improved_bullets: List[ImprovedBullet]
 
-class AnalysisResponse(BaseModel):
-    results: list
+# ==============================
+# SAFE SCORING FUNCTION
+# ==============================
+def calculate_score_and_skills(resume_text: str, job_descriptions: List[str]):
+    if model is None or util is None:
+        return 50.0, ["Model not loaded"]
 
-# =========================
-# MODELS LOADING
-# =========================
-model = SentenceTransformer("all-MiniLM-L6-v2")
+    resume_emb = model.encode(resume_text, convert_to_tensor=True)
+    job_embs = model.encode(job_descriptions, convert_to_tensor=True)
 
-# SAFE OpenAI client (may fail if no API key)
-try:
-    client = OpenAI()
-except:
-    client = None
+    similarities = util.pytorch_cos_sim(resume_emb, job_embs)[0]
+    semantic_score = float(similarities.mean().item()) * 100
 
-REQUIRED_SKILLS = [
-    "Python",
-    "FastAPI",
-    "REST API",
-    "Machine Learning",
-    "Data Processing",
-]
-
-# =========================
-# CORE LOGIC
-# =========================
-def calculate_score(resume, jobs):
-    resume_emb = model.encode(resume, convert_to_tensor=True)
-    job_embs = model.encode(jobs, convert_to_tensor=True)
-
-    score = util.pytorch_cos_sim(resume_emb, job_embs).mean().item() * 100
-
-    missing = []
+    missing_skills = []
     for skill in REQUIRED_SKILLS:
-        skill_emb = model.encode(skill, convert_to_tensor=True)
-        sim = util.pytorch_cos_sim(resume_emb, skill_emb).item()
-        if sim < 0.5:
-            missing.append(skill)
+        if skill.lower() not in resume_text.lower():
+            missing_skills.append(skill)
 
-    return round(score, 2), missing
+    return round(semantic_score, 2), missing_skills
 
-# =========================
+# ==============================
 # ROUTES
-# =========================
-
+# ==============================
 @app.get("/")
-def home():
+def root():
     return {"message": "NAVI API Running 🚀"}
 
-# -------------------------
+# --------------------------
 # ANALYZE
-# -------------------------
+# --------------------------
 @app.post("/analyze", response_model=AnalysisResponse)
-def analyze(req: AnalysisRequest):
-    score, missing = calculate_score(req.resume, req.job_descriptions)
+def analyze_resume(req: AnalysisRequest):
+    score, missing = calculate_score_and_skills(
+        req.resume,
+        req.job_descriptions
+    )
+
+    result = ResumeResult(
+        resume_name="Pasted Resume",
+        semantic_score=score,
+        missing_skills=missing
+    )
+
+    return AnalysisResponse(results=[result])
+
+# --------------------------
+# CSV UPLOAD
+# --------------------------
+@app.post("/upload-csv")
+async def upload_csv(file: UploadFile = File(...), job_descriptions: str = ""):
+    job_list = [jd.strip() for jd in job_descriptions.split("\n") if jd.strip()]
+
+    if not job_list:
+        raise HTTPException(status_code=400, detail="Job description required.")
+
+    contents = await file.read()
+    df = pd.read_csv(io.BytesIO(contents))
+
+    if "resume" not in df.columns:
+        raise HTTPException(status_code=400, detail="CSV must contain 'resume' column.")
+
+    total = len(df)
+    task_id = str(uuid.uuid4())
+    progress_store[task_id] = 0
+
+    results = []
+
+    for index, row in df.iterrows():
+        resume_text = str(row["resume"])
+        score, missing = calculate_score_and_skills(resume_text, job_list)
+
+        results.append({
+            "resume_name": f"Resume {index + 1}",
+            "semantic_score": score,
+            "missing_skills": ", ".join(missing)
+        })
+
+        progress_store[task_id] = int(((index + 1) / total) * 100)
+
+    progress_store[task_id] = 100
 
     return {
-        "results": [
-            {
-                "resume_name": "Pasted Resume",
-                "semantic_score": score,
-                "missing_skills": missing
-            }
-        ]
+        "task_id": task_id,
+        "results": results
     }
 
-# -------------------------
+# --------------------------
 # FIX RESUME (SAFE VERSION)
-# -------------------------
+# --------------------------
 @app.post("/fix-resume", response_model=FixResumeResponse)
-def fix_resume(req: FixResumeRequest):
+def fix_resume(request: FixResumeRequest):
 
-    score, missing = calculate_score(
-        req.resume_text,
-        [req.job_description]
+    resume_text = request.resume_text
+    job_description = request.job_description
+
+    score, missing_skills = calculate_score_and_skills(
+        resume_text,
+        [job_description]
     )
 
     bullets = [
-        b.strip("- ").strip()
-        for b in req.resume_text.split("\n")
-        if b.strip()
+        line.strip("- ").strip()
+        for line in resume_text.split("\n")
+        if line.strip()
     ]
 
-    improved = []
+    improved_bullets = []
 
-    # =========================
-    # TRY AI (OPENAI)
-    # =========================
-    if client:
-        try:
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a resume expert. Improve bullets without fabricating experience. Return JSON list."
-                    },
-                    {
-                        "role": "user",
-                        "content": json.dumps({
-                            "bullets": bullets,
-                            "job": req.job_description,
-                            "missing_skills": missing
-                        })
-                    }
-                ],
-                temperature=0.3,
-                max_tokens=600
+    # ==========================
+    # IF OPENAI NOT AVAILABLE → fallback
+    # ==========================
+    if client is None:
+        for b in bullets:
+            improved_bullets.append(
+                ImprovedBullet(
+                    original=b,
+                    improved=f"{b} (improved with impact + clarity)",
+                    keywords_added=[]
+                )
             )
 
-            content = response.choices[0].message.content
+        return FixResumeResponse(
+            similarity_score=score,
+            missing_skills=missing_skills,
+            improved_bullets=improved_bullets
+        )
 
-            try:
-                improved = json.loads(content)
-            except:
-                raise Exception("Invalid JSON from AI")
+    # ==========================
+    # OPENAI MODE (if available)
+    # ==========================
+    try:
+        system_prompt = (
+            "You are an expert resume optimizer. "
+            "Rewrite bullet points with impact, clarity, and ATS optimization. "
+            "Return ONLY JSON list."
+        )
 
-        except Exception:
-            improved = None
+        user_prompt = {
+            "resume_bullets": bullets,
+            "job_description": job_description,
+            "missing_skills": missing_skills
+        }
 
-    # =========================
-    # FALLBACK (ALWAYS WORKS)
-    # =========================
-    if not improved:
-        improved = []
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": str(user_prompt)}
+            ],
+            temperature=0.3,
+            max_tokens=800
+        )
+
+        try:
+            improved_bullets_json = json.loads(
+                response.choices[0].message.content
+            )
+        except:
+            improved_bullets_json = []
+
+        for i, b in enumerate(bullets):
+            improved_bullets.append(
+                ImprovedBullet(
+                    original=b,
+                    improved=improved_bullets_json[i]["improved"]
+                    if i < len(improved_bullets_json)
+                    else b,
+                    keywords_added=[]
+                )
+            )
+
+    except Exception as e:
+        print("OpenAI error:", e)
+
         for b in bullets:
-            improved.append({
-                "original": b,
-                "improved": f"{b} → enhanced with measurable impact and clarity",
-                "keywords_added": missing
-            })
+            improved_bullets.append(
+                ImprovedBullet(
+                    original=b,
+                    improved=f"{b} (safe fallback improvement)",
+                    keywords_added=[]
+                )
+            )
 
-    return {
-        "similarity_score": score,
-        "missing_skills": missing,
-        "improved_bullets": improved
-    }
+    return FixResumeResponse(
+        similarity_score=score,
+        missing_skills=missing_skills,
+        improved_bullets=improved_bullets
+    )
