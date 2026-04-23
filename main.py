@@ -1,6 +1,5 @@
 import os
 import json
-import openai
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -21,17 +20,24 @@ app.add_middleware(
 # FLAGS
 # =========================
 OPENAI_OK = False
+client = None
 
 # =========================
-# LOAD OPENAI (VERSION SAFE)
+# LOAD OPENAI (MODERN SDK)
 # =========================
-api_key = os.getenv("OPENAI_API_KEY")
+try:
+    from openai import OpenAI
 
-if api_key:
-    openai.api_key = api_key
-    OPENAI_OK = True
-else:
-    print("❌ OPENAI_API_KEY not found")
+    api_key = os.getenv("OPENAI_API_KEY")
+
+    if api_key:
+        client = OpenAI(api_key=api_key)
+        OPENAI_OK = True
+    else:
+        print("❌ No API key found")
+
+except Exception as e:
+    print("❌ OpenAI init failed:", e)
 
 # =========================
 # ROOT
@@ -60,12 +66,9 @@ def debug_env():
 @app.post("/analyze")
 def analyze(data: dict):
     resume = data.get("resume", "")
-    job = data.get("job", "")
-
     keywords = ["python", "fastapi", "machine learning", "api", "data"]
 
     missing = [k for k in keywords if k not in resume.lower()]
-
     score = 70 - (len(missing) * 5)
 
     return {
@@ -83,7 +86,6 @@ def fix_resume(data: dict):
 
     improved = []
 
-    # -------- OPENAI MODE --------
     if OPENAI_OK:
         try:
             prompt = f"""
@@ -91,17 +93,17 @@ Improve these resume bullet points with strong action verbs, impact, and measura
 
 {lines}
 
-Return ONLY valid JSON like:
+Return ONLY valid JSON:
 [{{"improved": "..."}}, ...]
 """
 
-            response = openai.ChatCompletion.create(
+            response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3
             )
 
-            content = response["choices"][0]["message"]["content"]
+            content = response.choices[0].message.content
             data_out = json.loads(content)
 
             for i, line in enumerate(lines):
@@ -111,9 +113,9 @@ Return ONLY valid JSON like:
                 })
 
         except Exception as e:
-            print("❌ OpenAI error:", e)
+            print("❌ OpenAI runtime error:", e)
 
-    # -------- FALLBACK MODE --------
+    # fallback
     if not improved:
         for line in lines:
             improved.append({
