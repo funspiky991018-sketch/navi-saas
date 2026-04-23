@@ -2,8 +2,11 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI()
+app = FastAPI(title="NAVI SaaS API")
 
+# =========================
+# CORS (ALLOW FRONTEND)
+# =========================
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -13,84 +16,116 @@ app.add_middleware(
 )
 
 # =========================
-# SAFE FLAGS
+# FLAGS
 # =========================
-MODEL_OK = False
 OPENAI_OK = False
-
-model = None
-util = None
 client = None
 
 # =========================
-# SAFE IMPORT BLOCKS
+# LOAD OPENAI SAFELY
 # =========================
-try:
-    from sentence_transformers import SentenceTransformer, util
-    model = SentenceTransformer("all-MiniLM-L6-v2")
-    MODEL_OK = True
-except Exception as e:
-    print("MODEL LOAD FAILED:", e)
-
 try:
     from openai import OpenAI
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    OPENAI_OK = True
+    api_key = os.getenv("OPENAI_API_KEY")
+
+    if api_key:
+        client = OpenAI(api_key=api_key)
+        OPENAI_OK = True
+    else:
+        print("❌ OPENAI_API_KEY not found")
+
 except Exception as e:
-    print("OPENAI LOAD FAILED:", e)
+    print("❌ OpenAI load error:", e)
 
 # =========================
-# ROOT TEST (VERY IMPORTANT)
+# ROOT ENDPOINT
 # =========================
 @app.get("/")
 def home():
     return {
         "status": "NAVI running",
-        "model": MODEL_OK,
+        "model": False,
         "openai": OPENAI_OK
     }
 
 # =========================
-# SAFE ANALYZE ENDPOINT
+# DEBUG ENV (IMPORTANT)
+# =========================
+@app.get("/debug-env")
+def debug_env():
+    return {
+        "has_key": os.getenv("OPENAI_API_KEY") is not None,
+        "key_preview": str(os.getenv("OPENAI_API_KEY"))[:10] if os.getenv("OPENAI_API_KEY") else None
+    }
+
+# =========================
+# ANALYZE (LIGHTWEIGHT)
 # =========================
 @app.post("/analyze")
 def analyze(data: dict):
     resume = data.get("resume", "")
     job = data.get("job", "")
 
-    missing = []
-
     keywords = ["python", "fastapi", "machine learning", "api", "data"]
 
-    for k in keywords:
-        if k not in resume.lower():
-            missing.append(k)
+    missing = [k for k in keywords if k not in resume.lower()]
 
-    score = 60 if MODEL_OK else 45
+    score = 70 - (len(missing) * 5)
 
     return {
-        "score": score,
+        "score": max(score, 30),
         "missing_skills": missing
     }
 
 # =========================
-# SAFE FIX ENDPOINT
+# FIX RESUME
 # =========================
 @app.post("/fix-resume")
 def fix_resume(data: dict):
     resume = data.get("resume", "")
-
-    lines = resume.split("\n")
+    lines = [l.strip() for l in resume.split("\n") if l.strip()]
 
     improved = []
 
-    for l in lines:
-        improved.append({
-            "original": l,
-            "improved": l + " (improved with impact + clarity)"
-        })
+    # -------- OpenAI MODE --------
+    if OPENAI_OK:
+        try:
+            prompt = f"""
+Improve these resume bullet points with impact and measurable results:
+
+{lines}
+
+Return as JSON list:
+[{{"improved": "..."}}, ...]
+"""
+
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3
+            )
+
+            import json
+            data_out = json.loads(response.choices[0].message.content)
+
+            for i, line in enumerate(lines):
+                improved.append({
+                    "original": line,
+                    "improved": data_out[i]["improved"] if i < len(data_out) else line
+                })
+
+        except Exception as e:
+            print("OpenAI error:", e)
+
+    # -------- FALLBACK MODE --------
+    if not improved:
+        for line in lines:
+            improved.append({
+                "original": line,
+                "improved": line + " (improved with impact + clarity)"
+            })
 
     return {
-        "improved": improved,
-        "note": "OpenAI disabled fallback mode" if not OPENAI_OK else "AI mode ready"
+        "openai_used": OPENAI_OK,
+        "improved": improved
     }
