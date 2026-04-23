@@ -1,11 +1,13 @@
 import os
+import json
+import openai
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="NAVI SaaS API")
 
 # =========================
-# CORS (ALLOW FRONTEND)
+# CORS
 # =========================
 app.add_middleware(
     CORSMiddleware,
@@ -19,26 +21,20 @@ app.add_middleware(
 # FLAGS
 # =========================
 OPENAI_OK = False
-client = None
 
 # =========================
-# LOAD OPENAI SAFELY
+# LOAD OPENAI (VERSION SAFE)
 # =========================
-try:
-    from openai import OpenAI
-    api_key = os.getenv("OPENAI_API_KEY")
+api_key = os.getenv("OPENAI_API_KEY")
 
-    if api_key:
-        client = OpenAI(api_key=api_key)
-        OPENAI_OK = True
-    else:
-        print("❌ OPENAI_API_KEY not found")
-
-except Exception as e:
-    print("❌ OpenAI load error:", e)
+if api_key:
+    openai.api_key = api_key
+    OPENAI_OK = True
+else:
+    print("❌ OPENAI_API_KEY not found")
 
 # =========================
-# ROOT ENDPOINT
+# ROOT
 # =========================
 @app.get("/")
 def home():
@@ -49,7 +45,7 @@ def home():
     }
 
 # =========================
-# DEBUG ENV (IMPORTANT)
+# DEBUG ENV
 # =========================
 @app.get("/debug-env")
 def debug_env():
@@ -59,7 +55,7 @@ def debug_env():
     }
 
 # =========================
-# ANALYZE (LIGHTWEIGHT)
+# ANALYZE
 # =========================
 @app.post("/analyze")
 def analyze(data: dict):
@@ -87,26 +83,26 @@ def fix_resume(data: dict):
 
     improved = []
 
-    # -------- OpenAI MODE --------
+    # -------- OPENAI MODE --------
     if OPENAI_OK:
         try:
             prompt = f"""
-Improve these resume bullet points with impact and measurable results:
+Improve these resume bullet points with strong action verbs, impact, and measurable results:
 
 {lines}
 
-Return as JSON list:
+Return ONLY valid JSON like:
 [{{"improved": "..."}}, ...]
 """
 
-            response = client.chat.completions.create(
+            response = openai.ChatCompletion.create(
                 model="gpt-4o-mini",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3
             )
 
-            import json
-            data_out = json.loads(response.choices[0].message.content)
+            content = response["choices"][0]["message"]["content"]
+            data_out = json.loads(content)
 
             for i, line in enumerate(lines):
                 improved.append({
@@ -115,7 +111,7 @@ Return as JSON list:
                 })
 
         except Exception as e:
-            print("OpenAI error:", e)
+            print("❌ OpenAI error:", e)
 
     # -------- FALLBACK MODE --------
     if not improved:
