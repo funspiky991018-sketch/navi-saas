@@ -1,31 +1,8 @@
-import os
 from fastapi import FastAPI
 from pydantic import BaseModel
-from typing import List, Dict, Any
+import re
 
-# OpenAI (new SDK style)
-from openai import OpenAI
-
-app = FastAPI(title="NAVI SaaS API", version="1.0.0")
-
-# ----------------------------
-# OpenAI INIT (SAFE)
-# ----------------------------
-client = None
-openai_ready = False
-
-try:
-    api_key = os.getenv("OPENAI_API_KEY")
-
-    if api_key:
-        client = OpenAI(api_key=api_key)
-        openai_ready = True
-        print("✅ OpenAI connected")
-    else:
-        print("❌ No OpenAI key found")
-
-except Exception as e:
-    print("❌ OpenAI init failed:", str(e))
+app = FastAPI(title="NAVI SaaS V5 - Offline AI Engine", version="5.0.0")
 
 
 # ----------------------------
@@ -41,41 +18,71 @@ class FixRequest(BaseModel):
 
 
 # ----------------------------
+# BASIC NLP HELPERS
+# ----------------------------
+SKILLS_DB = {
+    "python": ["python", "py"],
+    "fastapi": ["fastapi", "api", "rest"],
+    "machine learning": ["ml", "machine learning", "ai"],
+    "data": ["data", "pandas", "numpy"],
+    "sql": ["sql", "database", "db"]
+}
+
+
+def normalize(text: str):
+    return text.lower()
+
+
+def extract_skills(text: str):
+    text = normalize(text)
+    found = []
+
+    for skill, keywords in SKILLS_DB.items():
+        for kw in keywords:
+            if kw in text:
+                found.append(skill)
+                break
+
+    return list(set(found))
+
+
+# ----------------------------
 # HOME
 # ----------------------------
 @app.get("/")
 def home():
     return {
-        "status": "NAVI running",
-        "model": openai_ready,
-        "openai": openai_ready
+        "status": "NAVI V5 running (Offline AI)",
+        "ai_mode": "offline",
+        "openai": False
     }
 
 
 # ----------------------------
-# ANALYZE RESUME
+# ANALYZE (IMPROVED ATS SCORING)
 # ----------------------------
 @app.post("/analyze")
 def analyze(req: AnalyzeRequest):
 
-    resume = req.resume.lower()
-    job = req.job.lower()
+    resume_skills = extract_skills(req.resume)
+    job_skills = extract_skills(req.job)
 
-    keywords = [
-        "python", "fastapi", "machine learning",
-        "data", "api", "rest"
-    ]
+    matched = list(set(resume_skills) & set(job_skills))
+    missing = list(set(job_skills) - set(resume_skills))
 
-    matched = []
-    missing = []
+    # smarter scoring (not naive)
+    if len(job_skills) == 0:
+        score = 50
+    else:
+        score = int((len(matched) / len(job_skills)) * 100)
 
-    for k in keywords:
-        if k in resume and k in job:
-            matched.append(k)
-        elif k in job:
-            missing.append(k)
+    # boost if resume has strong structure signals
+    if "project" in req.resume.lower():
+        score += 5
+    if "experience" in req.resume.lower():
+        score += 5
 
-    score = int((len(matched) / len(keywords)) * 100)
+    score = min(score, 100)
 
     return {
         "score": score,
@@ -85,89 +92,75 @@ def analyze(req: AnalyzeRequest):
 
 
 # ----------------------------
-# FIX RESUME (AI POWERED)
+# FIX RESUME (OFFLINE AI ENGINE)
 # ----------------------------
 @app.post("/fix-resume")
 def fix_resume(req: FixRequest):
 
-    lines = req.resume.split("\n")
+    lines = [l.strip() for l in req.resume.split("\n") if l.strip()]
+    improved = []
 
-    # If OpenAI is NOT ready → fallback safe mode
-    if not openai_ready:
-        return {
-            "openai_used": False,
-            "improved": [
-                {
-                    "original": line,
-                    "improved": line + " (improved with impact + clarity)"
-                }
-                for line in lines
-            ]
-        }
+    for line in lines:
+        improved_line = improve_line(line)
+        improved.append({
+            "original": line,
+            "improved": improved_line
+        })
 
-    try:
-        prompt = f"""
-You are a professional resume writer.
-
-Rewrite each bullet point to:
-- be strong and professional
-- use action verbs
-- add measurable impact where possible
-- avoid repetition
-
-Return ONLY JSON like:
-[
-  {{"improved": "text"}}
-]
-
-Resume:
-{req.resume}
-"""
-
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.4
-        )
-
-        content = response.choices[0].message.content
-
-        # Try safe parsing
-        import json
-
-        try:
-            improved = json.loads(content)
-        except:
-            improved = [
-                {"original": line, "improved": line}
-                for line in lines
-            ]
-
-        return {
-            "openai_used": True,
-            "improved": improved
-        }
-
-    except Exception as e:
-        return {
-            "openai_used": False,
-            "error": str(e),
-            "improved": [
-                {
-                    "original": line,
-                    "improved": line
-                }
-                for line in lines
-            ]
-        }
-
-
-# ----------------------------
-# DEBUG ENV (OPTIONAL)
-# ----------------------------
-@app.get("/debug-env")
-def debug_env():
     return {
-        "has_openai_key": bool(os.getenv("OPENAI_API_KEY")),
-        "openai_ready": openai_ready
+        "ai_mode": "offline",
+        "improved": improved
     }
+
+
+# ----------------------------
+# CORE "AI" REWRITER LOGIC
+# ----------------------------
+def improve_line(line: str):
+
+    text = line.strip()
+
+    # Rule 1: Add action verbs if missing
+    if not re.match(r"^(built|developed|created|designed|implemented|led|managed|optimized)", text.lower()):
+        text = "Developed " + text
+
+    # Rule 2: Upgrade weak phrases
+    replacements = {
+        "worked on": "contributed to",
+        "helped": "assisted in improving",
+        "made": "developed",
+        "did": "executed"
+    }
+
+    for k, v in replacements.items():
+        text = re.sub(k, v, text, flags=re.IGNORECASE)
+
+    # Rule 3: Add impact hint if missing numbers
+    if not re.search(r"\d+%", text):
+        text += " with improved efficiency and performance"
+
+    # Rule 4: ATS optimization keyword boost
+    if "api" in text.lower():
+        text += " using RESTful API architecture"
+    if "data" in text.lower():
+        text += " handling structured datasets"
+
+    return text
+
+
+# ----------------------------
+# DEBUG
+# ----------------------------
+@app.get("/debug")
+def debug():
+    return {
+        "mode": "offline-ai-v5",
+        "skills_db": list(SKILLS_DB.keys())
+    }
+
+import os
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
