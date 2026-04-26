@@ -1,129 +1,173 @@
 import os
-import json
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import List, Dict, Any
 
-app = FastAPI(title="NAVI SaaS API")
+# OpenAI (new SDK style)
+from openai import OpenAI
 
-# =========================
-# CORS
-# =========================
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app = FastAPI(title="NAVI SaaS API", version="1.0.0")
 
-# =========================
-# FLAGS
-# =========================
-OPENAI_OK = False
+# ----------------------------
+# OpenAI INIT (SAFE)
+# ----------------------------
 client = None
+openai_ready = False
 
-# =========================
-# LOAD OPENAI (MODERN SDK)
-# =========================
 try:
-    from openai import OpenAI
-
     api_key = os.getenv("OPENAI_API_KEY")
 
     if api_key:
         client = OpenAI(api_key=api_key)
-        OPENAI_OK = True
+        openai_ready = True
+        print("✅ OpenAI connected")
     else:
-        print("❌ No API key found")
+        print("❌ No OpenAI key found")
 
 except Exception as e:
-    print("❌ OpenAI init failed:", e)
+    print("❌ OpenAI init failed:", str(e))
 
-# =========================
-# ROOT
-# =========================
+
+# ----------------------------
+# REQUEST MODELS
+# ----------------------------
+class AnalyzeRequest(BaseModel):
+    resume: str
+    job: str
+
+
+class FixRequest(BaseModel):
+    resume: str
+
+
+# ----------------------------
+# HOME
+# ----------------------------
 @app.get("/")
 def home():
     return {
         "status": "NAVI running",
-        "model": False,
-        "openai": OPENAI_OK
+        "model": openai_ready,
+        "openai": openai_ready
     }
 
-# =========================
-# DEBUG ENV
-# =========================
-@app.get("/debug-env")
-def debug_env():
-    return {
-        "has_key": os.getenv("OPENAI_API_KEY") is not None,
-        "key_preview": str(os.getenv("OPENAI_API_KEY"))[:10] if os.getenv("OPENAI_API_KEY") else None
-    }
 
-# =========================
-# ANALYZE
-# =========================
+# ----------------------------
+# ANALYZE RESUME
+# ----------------------------
 @app.post("/analyze")
-def analyze(data: dict):
-    resume = data.get("resume", "")
-    keywords = ["python", "fastapi", "machine learning", "api", "data"]
+def analyze(req: AnalyzeRequest):
 
-    missing = [k for k in keywords if k not in resume.lower()]
-    score = 70 - (len(missing) * 5)
+    resume = req.resume.lower()
+    job = req.job.lower()
+
+    keywords = [
+        "python", "fastapi", "machine learning",
+        "data", "api", "rest"
+    ]
+
+    matched = []
+    missing = []
+
+    for k in keywords:
+        if k in resume and k in job:
+            matched.append(k)
+        elif k in job:
+            missing.append(k)
+
+    score = int((len(matched) / len(keywords)) * 100)
 
     return {
-        "score": max(score, 30),
+        "score": score,
+        "matched_skills": matched,
         "missing_skills": missing
     }
 
-# =========================
-# FIX RESUME
-# =========================
+
+# ----------------------------
+# FIX RESUME (AI POWERED)
+# ----------------------------
 @app.post("/fix-resume")
-def fix_resume(data: dict):
-    resume = data.get("resume", "")
-    lines = [l.strip() for l in resume.split("\n") if l.strip()]
+def fix_resume(req: FixRequest):
 
-    improved = []
+    lines = req.resume.split("\n")
 
-    if OPENAI_OK:
-        try:
-            prompt = f"""
-Improve these resume bullet points with strong action verbs, impact, and measurable results:
+    # If OpenAI is NOT ready → fallback safe mode
+    if not openai_ready:
+        return {
+            "openai_used": False,
+            "improved": [
+                {
+                    "original": line,
+                    "improved": line + " (improved with impact + clarity)"
+                }
+                for line in lines
+            ]
+        }
 
-{lines}
+    try:
+        prompt = f"""
+You are a professional resume writer.
 
-Return ONLY valid JSON:
-[{{"improved": "..."}}, ...]
+Rewrite each bullet point to:
+- be strong and professional
+- use action verbs
+- add measurable impact where possible
+- avoid repetition
+
+Return ONLY JSON like:
+[
+  {{"improved": "text"}}
+]
+
+Resume:
+{req.resume}
 """
 
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3
-            )
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.4
+        )
 
-            content = response.choices[0].message.content
-            data_out = json.loads(content)
+        content = response.choices[0].message.content
 
-            for i, line in enumerate(lines):
-                improved.append({
+        # Try safe parsing
+        import json
+
+        try:
+            improved = json.loads(content)
+        except:
+            improved = [
+                {"original": line, "improved": line}
+                for line in lines
+            ]
+
+        return {
+            "openai_used": True,
+            "improved": improved
+        }
+
+    except Exception as e:
+        return {
+            "openai_used": False,
+            "error": str(e),
+            "improved": [
+                {
                     "original": line,
-                    "improved": data_out[i]["improved"] if i < len(data_out) else line
-                })
+                    "improved": line
+                }
+                for line in lines
+            ]
+        }
 
-        except Exception as e:
-            print("❌ OpenAI runtime error:", e)
 
-    # fallback
-    if not improved:
-        for line in lines:
-            improved.append({
-                "original": line,
-                "improved": line + " (improved with impact + clarity)"
-            })
-
+# ----------------------------
+# DEBUG ENV (OPTIONAL)
+# ----------------------------
+@app.get("/debug-env")
+def debug_env():
     return {
-        "openai_used": OPENAI_OK,
-        "improved": improved
+        "has_openai_key": bool(os.getenv("OPENAI_API_KEY")),
+        "openai_ready": openai_ready
     }
