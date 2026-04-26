@@ -1,12 +1,12 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 import re
+import os
 
 app = FastAPI(title="NAVI SaaS V5 - Offline AI Engine", version="5.0.0")
 
-
 # ----------------------------
-# REQUEST MODELS
+# MODELS
 # ----------------------------
 class AnalyzeRequest(BaseModel):
     resume: str
@@ -18,7 +18,7 @@ class FixRequest(BaseModel):
 
 
 # ----------------------------
-# BASIC NLP HELPERS
+# SKILLS DB
 # ----------------------------
 SKILLS_DB = {
     "python": ["python", "py"],
@@ -59,7 +59,7 @@ def home():
 
 
 # ----------------------------
-# ANALYZE (IMPROVED ATS SCORING)
+# ANALYZE
 # ----------------------------
 @app.post("/analyze")
 def analyze(req: AnalyzeRequest):
@@ -70,13 +70,11 @@ def analyze(req: AnalyzeRequest):
     matched = list(set(resume_skills) & set(job_skills))
     missing = list(set(job_skills) - set(resume_skills))
 
-    # smarter scoring (not naive)
     if len(job_skills) == 0:
         score = 50
     else:
         score = int((len(matched) / len(job_skills)) * 100)
 
-    # boost if resume has strong structure signals
     if "project" in req.resume.lower():
         score += 5
     if "experience" in req.resume.lower():
@@ -92,7 +90,7 @@ def analyze(req: AnalyzeRequest):
 
 
 # ----------------------------
-# FIX RESUME (OFFLINE AI ENGINE)
+# FIX RESUME
 # ----------------------------
 @app.post("/fix-resume")
 def fix_resume(req: FixRequest):
@@ -113,18 +111,13 @@ def fix_resume(req: FixRequest):
     }
 
 
-# ----------------------------
-# CORE "AI" REWRITER LOGIC
-# ----------------------------
 def improve_line(line: str):
 
     text = line.strip()
 
-    # Rule 1: Add action verbs if missing
     if not re.match(r"^(built|developed|created|designed|implemented|led|managed|optimized)", text.lower()):
         text = "Developed " + text
 
-    # Rule 2: Upgrade weak phrases
     replacements = {
         "worked on": "contributed to",
         "helped": "assisted in improving",
@@ -135,11 +128,9 @@ def improve_line(line: str):
     for k, v in replacements.items():
         text = re.sub(k, v, text, flags=re.IGNORECASE)
 
-    # Rule 3: Add impact hint if missing numbers
     if not re.search(r"\d+%", text):
         text += " with improved efficiency and performance"
 
-    # Rule 4: ATS optimization keyword boost
     if "api" in text.lower():
         text += " using RESTful API architecture"
     if "data" in text.lower():
@@ -158,8 +149,10 @@ def debug():
         "skills_db": list(SKILLS_DB.keys())
     }
 
-import os
 
+# ----------------------------
+# RENDER SAFE START
+# ----------------------------
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 10000))
