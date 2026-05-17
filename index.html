@@ -1,65 +1,46 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>NAVI Simple</title>
+  <title>NAVI V4</title>
 </head>
 <body>
 
-<h2>NAVI Resume Tool</h2>
+<h2>NAVI Resume AI</h2>
 
-<p>Resume:</p>
-<textarea id="resume" rows="6" cols="60"></textarea>
-
-<p>Job Description:</p>
-<textarea id="job" rows="6" cols="60"></textarea>
-
-<br><br>
+<textarea id="resume" placeholder="Paste resume"></textarea><br>
+<textarea id="job" placeholder="Paste job description"></textarea><br>
 
 <button onclick="analyze()">Analyze</button>
 <button onclick="fixResume()">Fix Resume</button>
 
-<h3>Result:</h3>
-<div id="output"></div>
+<pre id="output"></pre>
 
 <script>
 const API = "https://navi-api-254r.onrender.com";
 
-async function analyze() {
-    const resume = document.getElementById("resume").value;
-    const job = document.getElementById("job").value;
+async function analyze(){
+  const res = await fetch(API + "/analyze", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({
+      resume: document.getElementById("resume").value,
+      job: document.getElementById("job").value
+    })
+  });
 
-    const res = await fetch(API + "/analyze", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({resume, job})
-    });
-
-    const data = await res.json();
-
-    document.getElementById("output").innerHTML =
-        "Score: " + data.score + "%<br>" +
-        "Missing: " + data.missing_skills.join(", ");
+  document.getElementById("output").textContent = await res.text();
 }
 
-async function fixResume() {
-    const resume = document.getElementById("resume").value;
+async function fixResume(){
+  const res = await fetch(API + "/fix-resume", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({
+      resume: document.getElementById("resume").value
+    })
+  });
 
-    const res = await fetch(API + "/fix-resume", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({resume})
-    });
-
-    const data = await res.json();
-
-    let text = "";
-
-    data.improved.forEach(item => {
-        text += "Original: " + item.original + "<br>";
-        text += "Improved: " + item.improved + "<br><br>";
-    });
-
-    document.getElementById("output").innerHTML = text;
+  document.getElementById("output").textContent = await res.text();
 }
 </script>
 

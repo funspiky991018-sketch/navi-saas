@@ -1,4 +1,8 @@
-﻿fastapi==0.129.0
-uvicorn==0.40.0
-pydantic==2.12.5
-requests==2.32.5
+﻿fastapi
+uvicorn
+pydantic
+python-jose
+passlib[bcrypt]
+sqlalchemy
+psycopg2-binary
+python-dotenv
